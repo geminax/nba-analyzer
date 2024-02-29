@@ -1,10 +1,13 @@
 import dash
 import pickle
 import pandas as pd
-from dash import html, dcc, Input, Output, State, callback, dash_table
+from dash import html, dcc, Input, Output, State, callback, dash_table, ctx
 from nba_api.stats.endpoints import playergamelogs
+from nba_api.stats.static import teams
 
 dash.register_page(__name__, path='/')
+
+nba_teams = teams.get_teams()
 
 stat_types = ['PTS', 'AST', 'REB', 'PTS/AST', 'PTS/REB', 'AST/REB', 'PTS/AST/REB']
 players_dict = {}
@@ -27,17 +30,12 @@ bottom_grid = pd.DataFrame(bottom_grid_cols)
 
 layout = \
 html.Div([
-  html.Datalist(id='players', children=[
-    html.Option(value=name, label=str(id), hidden=True) for name, id in players_dict.items()
-  ]),
-  dcc.Input(placeholder='Player', id='player-selector', list='players'),
+  dcc.Dropdown(id='player-selector', options=[dict(label=name, value=id) for name, id in players_dict.items()], placeholder='Player'),
+  dcc.Dropdown(id='matchup-selector', options=[dict(label=team['full_name'],value=team['abbreviation']) for team in nba_teams], placeholder='Matchup'),
   html.Br(),
   dcc.Input(placeholder='Prop Line', id='prop-line', type='number', step=0.5, value=0),
   html.Br(),
-  html.Datalist(id='stat-types', children=[
-    html.Option(value=statType, hidden=True) for statType in stat_types
-  ]),
-  dcc.Input(placeholder='Stat', id='stat-selector', list='stat-types', value='PTS'),
+  dcc.Dropdown(stat_types, 'PTS', id='stat-selector'),
   html.Br(),
   html.Button('Refresh Player', id='refresh-player'),
   dcc.Graph(
@@ -65,32 +63,41 @@ html.Div([
 @callback(
   Output('bottom-grid', 'data'),
   Input('player-selector', 'value'),
+  Input('matchup-selector', 'value'),
   Input('stat-selector', 'value'),
   Input('prop-line', 'value'),
   Input('refresh-player', 'n_clicks'),
   State('bottom-grid', 'data')
 )
-def update_data(player, stat, prop, n_clicks, data):
-  if player not in player_names or stat not in stat_types or prop < 0:
+def update_data(player_id, matchup, stat, prop, n_clicks, data):
+  print(player_id, matchup, stat, prop)
+  if player_id == None or stat == None or prop < 0:
     return bottom_grid.to_dict('records')
   
-  if players_dict[player] in players_frames_cache.keys():
+  if "refresh-player" == ctx.triggered_id and player_id in players_frames_cache.keys():
     print('invalidated')
-    del players_frames_cache[players_dict[player]]
+    del players_frames_cache[player_id]
   
   df = None
-  if players_dict[player] not in players_frames_cache.keys():
+  if player_id not in players_frames_cache.keys():
     print('querying')
-    df = playergamelogs.PlayerGameLogs(player_id_nullable=players_dict[player], season_nullable="2023-24").get_data_frames()[0]
-    df = df[['PTS', 'REB', 'AST']]
+    df = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable="2023-24").get_data_frames()[0]
+    # print(df.keys())
+    df = df[['PTS', 'REB', 'AST', 'MATCHUP']]
     df['PTS/REB'] = df[['PTS', 'REB']].sum(axis=1)
     df['PTS/AST'] = df[['PTS', 'AST']].sum(axis=1)
     df['AST/REB'] = df[['AST', 'REB']].sum(axis=1)
     df['PTS/AST/REB'] = df[['PTS', 'AST', 'REB']].sum(axis=1)
-    players_frames_cache[players_dict[player]] = df.to_json()
+    players_frames_cache[player_id] = df.to_json()
   else:
     print('from cache')
-    df = pd.read_json(players_frames_cache[players_dict[player]])
+    df = pd.read_json(players_frames_cache[player_id])
+
+  if matchup != None:
+    print('matchup specific processing')
+    df = df[df['MATCHUP'].str[-3:] == matchup]
+
+  print(df)
 
   # averages
   season = "{:.2f}".format(df[stat].mean())
